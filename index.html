@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Aurora Simulator</title>
+    <link rel="stylesheet" href="styles/main.css">
+    <link rel="stylesheet" href="styles/control-panel.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+    <!-- Set CORS policy for modules -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' unpkg.com https://kauai.ccmc.gsfc.nasa.gov; connect-src 'self' https://kauai.ccmc.gsfc.nasa.gov; script-src 'self' 'unsafe-eval' 'unsafe-inline' unpkg.com; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com">
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="loader">
+        <div class="saturn-stars"></div>
+        <div class="saturn-loader">
+            <div class="saturn-planet"></div>
+            <div class="saturn-ring"></div>
+        </div>
+        <p class="loading-text">Launching Simulation...</p>
+    </div>
+
+    <!-- View switching buttons -->
+    <div class="view-switch">
+        <button id="space-view-btn" class="active">Space View</button>
+        <div id="ground-view-wrapper" class="ground-view-wrapper">
+            <button id="ground-view-btn">Ground View</button>
+            <div class="pole-buttons-container">
+                <button id="north-pole-btn">North Pole</button>
+                <button id="south-pole-btn">South Pole</button>
+            </div>
+        </div>
+        <button id="active-pole-btn" style="display: none;"></button>
+    </div>
+
+    <!-- Ground view container -->
+    <div id="ground-view-container"></div>
+
+    <!-- Control Panel -->
+    <div class="control-panel" id="control-panel">
+    <div class="control-header">
+        <div class="panel-icons">
+            <!-- Collapse icon -->
+            <svg class="toggle-panel-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6 4L10 8L6 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <!-- Expand icon -->
+            <svg class="expand-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6 2L10 2L10 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M10 14L6 14L6 10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M2 6L2 2L6 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M14 10L14 14L10 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+        </div>
+
+        <h2>Controls</h2>
+    </div>
+    <div class="control-panel-content">
+        <!-- Solar Wind Parameters -->
+        <div class="control-section expanded">
+            <div class="control-section-header">
+                <h3>Solar Wind</h3>
+                <svg class="section-toggle-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M2 4L6 8L10 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </div>
+            <div class="control-section-content">
+                <div class="control-row">
+                    <label class="control-label">Speed</label>
+                    <div class="control-input-wrapper">
+                        <input type="range" class="control-input" name="windSpeed" min="300" max="1200" step="10" value="500">
+                        <div class="control-value">500</div>
+                    </div>
+                </div>
+                <div class="control-row">
+                    <label class="control-label">Density</label>
+                    <div class="control-input-wrapper">
+                        <input type="range" class="control-input" name="density" min="1" max="50" step="1" value="10">
+                        <div class="control-value">10</div>
+                    </div>
+                </div>
+                <div class="control-row">
+                    <label class="control-label">IMF Bz</label>
+                    <div class="control-input-wrapper">
+                        <input type="range" class="control-input" name="bz" min="-20" max="5" step="0.5" value="-5">
+                        <div class="control-value">-5</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Emission Settings -->
+        <div class="control-section">
+            <div class="control-section-header">
+                <h3>Emission</h3>
+                <svg class="section-toggle-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M2 4L6 8L10 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </div>
+            <div class="control-section-content">
+                <div class="control-row">
+                    <label class="control-label">Interval</label>
+                    <div class="control-input-wrapper">
+                        <input type="range" class="control-input" name="emissionInterval" min="0" max="20" step="1" value="5">
+                        <div class="control-value">5</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Mode -->
+        <div class="control-section">
+            <div class="control-section-header">
+                <h3>Data Mode</h3>
+                <svg class="section-toggle-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M2 4L6 8L10 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </div>
+            <div class="control-section-content">
+                <div class="control-row">
+                    <label class="control-label">Real-time</label>
+                    <div class="real-mode-wrapper">
+                        <input type="checkbox" class="control-input" name="realMode" id="realMode">
+                        <div class="loading-spinner" id="real-mode-spinner"></div>
+                    </div>
+                    <div class="error-message" id="real-mode-error"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+    <script src="scripts/loader.js"></script>
+    <script type="module" src="scripts/main.js"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+        }
+    }
+    </script>
+</body>
+</html>
