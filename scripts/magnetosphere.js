@@ -11,7 +11,11 @@ export function createMagnetosphere(earthPosition) {
             solarWindDirection: { value: new THREE.Vector3(1, 0, 0) },
             magneticPoleStrength: { value: 1.0 },
             equatorBulge: { value: 1.2 },
-            tailLength: { value: 1.5 }
+            tailLength: { value: 1.5 },
+            // Uniforms for the ripple effect
+            uRippleTime: { value: 999 },
+            uRippleActive: { value: 0.0 },
+            uRippleOrigin: { value: new THREE.Vector3(40, 0, 0) }
         },
         vertexShader: `
             uniform float time;
@@ -20,6 +24,9 @@ export function createMagnetosphere(earthPosition) {
             uniform float magneticPoleStrength;
             uniform float equatorBulge;
             uniform float tailLength;
+            uniform float uRippleTime;
+            uniform float uRippleActive;
+            uniform vec3 uRippleOrigin;
             
             varying vec3 vPosition;
             varying vec3 vNormal;
@@ -29,41 +36,39 @@ export function createMagnetosphere(earthPosition) {
                 vNormal = normal;
                 vec3 pos = position;
                 
-                // Calculate latitude effect (poles vs equator)
+                if (pos.x > 0.0) { pos.x *= (1.0 - compression * 0.3); } 
+                else { pos.x *= (1.0 + tailLength * (1.0 - compression * 0.5)); }
+                
                 float latitude = asin(pos.y / length(pos));
                 float latitudeEffect = pow(cos(latitude), 2.0) * equatorBulge;
-                
-                // Basic magnetosphere shape
-                if (pos.x > 0.0) {
-                    // Sun-facing side: compression
-                    pos.x *= (1.0 - compression * 0.3);
-                } else {
-                    // Tail side: elongation
-                    pos.x *= (1.0 + tailLength * (1.0 - compression * 0.5));
-                }
-                
-                // Apply equatorial bulge
                 float radiusMultiplier = 1.0 + latitudeEffect * 0.2;
                 pos.xz *= radiusMultiplier;
                 
-                // Reduce field strength at poles
                 float poleEffect = 1.0 - pow(abs(sin(latitude)), 3.0) * magneticPoleStrength;
                 pos *= poleEffect;
                 
-                // Dynamic response to solar wind
                 if (compression > 0.0) {
                     float angle = dot(normalize(pos), solarWindDirection);
                     float deformation = smoothstep(-1.0, 1.0, angle) * compression;
                     pos -= solarWindDirection * deformation * 10.0;
-                    
-                    // Add turbulence in compressed regions
                     float turbulence = sin(time * 5.0 + length(pos) * 0.2) * compression * 2.0;
                     pos += normal * turbulence;
+                }
+
+                // RIPPLE EFFECT LOGIC
+                if (uRippleActive > 0.5) {
+                    float rippleSpeed = 60.0;
+                    float rippleWidth = 20.0;
+                    float distFromOrigin = distance(pos, uRippleOrigin);
+                    float wave = sin((distFromOrigin - uRippleTime * rippleSpeed) / rippleWidth);
+                    float rippleIntensity = max(0.0, 1.0 - uRippleTime * 0.8) * 3.0;
+                    pos += normalize(pos) * wave * rippleIntensity;
                 }
                 
                 gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
             }
         `,
+        // --- THIS IS THE RESTORED, COMPLETE FRAGMENT SHADER ---
         fragmentShader: `
             uniform float time;
             uniform float compression;
@@ -71,31 +76,20 @@ export function createMagnetosphere(earthPosition) {
             varying vec3 vNormal;
             
             void main() {
-                // Calculate latitude for color variation
                 float latitude = asin(vPosition.y / length(vPosition));
-                
-                // Base color: blue for stable field
                 vec3 baseColor = vec3(0.2, 0.6, 1.0);
                 
-                // Add purple tint near poles
                 float poleInfluence = pow(abs(sin(latitude)), 8.0);
                 vec3 poleColor = vec3(0.6, 0.2, 1.0);
                 vec3 finalColor = mix(baseColor, poleColor, poleInfluence);
                 
-                // Enhanced fresnel effect for field lines
                 float fresnel = pow(1.0 - abs(dot(vNormal, vec3(0, 0, 1))), 3.0);
-                
-                // Magnetic field strength visualization
                 float fieldStrength = 1.0 - pow(abs(sin(latitude)), 2.0);
-                
-                // Combine effects for final alpha
                 float alpha = fresnel * 0.4 * fieldStrength;
                 
-                // Add subtle pulsing
                 float pulse = sin(time * 2.0) * 0.1 + 0.9;
                 alpha *= pulse;
                 
-                // Increase opacity in compressed regions
                 if (compression > 0.0) {
                     alpha = mix(alpha, alpha * 1.5, compression);
                     finalColor = mix(finalColor, vec3(0.4, 0.8, 1.0), compression * 0.5);
@@ -113,50 +107,42 @@ export function createMagnetosphere(earthPosition) {
 }
 
 let currentCompression = 0;
-let targetCompression = 0;
 let currentBz = 0;
 
-export function updateMagnetosphere(time, compressionAmount = 0, params = { bz: -5 }) {
+export function updateMagnetosphere(time, compressionAmount = 0, params = { bz: -5 }, rippleInfo) {
     if (!magnetosphere) return;
     
-    // Smooth transition for compression
-    targetCompression = compressionAmount;
     const smoothSpeed = 0.1;
-    currentCompression += (targetCompression - currentCompression) * smoothSpeed;
+    currentCompression += (compressionAmount - currentCompression) * smoothSpeed;
     
-    // Smooth transition for IMF Bz
-    const targetBz = params.bz;
     const bzSmoothSpeed = 0.05;
-    currentBz += (targetBz - currentBz) * bzSmoothSpeed;
+    currentBz += (params.bz - currentBz) * bzSmoothSpeed;
     
-    // Update basic uniforms
-    magnetosphere.material.uniforms.time.value = time;
-    magnetosphere.material.uniforms.compression.value = currentCompression;
+    const uniforms = magnetosphere.material.uniforms;
+    uniforms.time.value = time;
+    uniforms.compression.value = currentCompression;
     
-    // Adjust magnetic field strength based on IMF Bz
-    // Negative Bz causes stronger reconnection and weaker field
-    const baseStrength = 1.0;
-    const bzEffect = Math.max(0, currentBz / 10); // Normalize Bz effect
+    const bzEffect = Math.max(0, currentBz / 10);
     const compressionEffect = currentCompression * 0.3;
-    magnetosphere.material.uniforms.magneticPoleStrength.value = 
-        baseStrength + bzEffect - compressionEffect;
+    uniforms.magneticPoleStrength.value = 1.0 + bzEffect - compressionEffect;
     
-    // Adjust equatorial bulge based on IMF Bz and compression
-    // Negative Bz increases bulge due to reconnection
     const bzBulgeEffect = Math.max(0, -currentBz / 10);
-    magnetosphere.material.uniforms.equatorBulge.value = 
-        1.2 + currentCompression * 0.3 + bzBulgeEffect * 0.4;
+    uniforms.equatorBulge.value = 1.2 + currentCompression * 0.3 + bzBulgeEffect * 0.4;
     
-    // Elongate tail more with negative Bz
     const bzTailEffect = Math.max(0, -currentBz / 10);
-    magnetosphere.material.uniforms.tailLength.value = 
-        1.5 + currentCompression * 0.5 + bzTailEffect * 0.8;
-    
-    // Update solar wind direction with slight variations
-    const windVariation = Math.sin(time * 0.5) * 0.1;
-    magnetosphere.material.uniforms.solarWindDirection.value.set(
-        1,
-        windVariation + currentBz * 0.1, // Slight deflection based on Bz
-        windVariation
-    );
+    uniforms.tailLength.value = 1.5 + currentCompression * 0.5 + bzTailEffect * 0.8;
+
+    if (rippleInfo && rippleInfo.active) {
+        uniforms.uRippleActive.value = 1.0;
+        uniforms.uRippleTime.value = rippleInfo.time;
+        uniforms.uRippleOrigin.value.copy(rippleInfo.origin);
+    } else {
+        uniforms.uRippleActive.value = 0.0;
+    }
+
+    return {
+        compression: currentCompression,
+        tailLength: uniforms.tailLength.value,
+        equatorBulge: uniforms.equatorBulge.value
+    };
 }
