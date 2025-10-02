@@ -1,7 +1,6 @@
 import { THREE, scene } from './scene-core.js';
 
 let sun;
-let lastShockwaveTime = 0;
 
 export function createSun() {
     const sunGeometry = new THREE.SphereGeometry(30, 64, 64);
@@ -117,17 +116,6 @@ export function createSun() {
     sunLight.position.copy(sun.position);
     scene.add(sunLight);
     
-    // Add click event listener for solar flares
-    sun.userData.onClick = () => {
-        const currentTime = Date.now();
-        if (currentTime - lastShockwaveTime > 2000) { // Minimum 2 seconds between flares
-            import('./shockwave.js').then(({ createShockwave }) => {
-                createShockwave(scene, sun.position, earth.position);
-                lastShockwaveTime = currentTime;
-            });
-        }
-    };
-    
     return sun;
 }
 
@@ -153,21 +141,3 @@ export function animateSun(globalTime) {
 }
 
     // Update controls in animation
-export function updateControls() {
-    if (controls) {
-        controls.update();
-    }
-}
-
-// Handle window resize
-window.addEventListener('resize', () => {
-    if (!sun) return;
-    const camera = sun.parent.children.find(child => child instanceof THREE.PerspectiveCamera);
-    const renderer = sun.parent.userData.renderer;
-    if (camera && renderer) {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(window.devicePixelRatio);
-    }
-});

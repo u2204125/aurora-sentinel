@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 
     <!-- Set CORS policy for modules -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self' unpkg.com https://kauai.ccmc.gsfc.nasa.gov; connect-src 'self' https://kauai.ccmc.gsfc.nasa.gov; script-src 'self' 'unsafe-eval' 'unsafe-inline' unpkg.com; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src fonts.gstatic.com">
+    <meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval' data:;">
 
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
 </head>
@@ -94,7 +94,7 @@
         </div>
 
         <!-- Emission Settings -->
-        <div class="control-section">
+        <div class="control-section expanded">
             <div class="control-section-header">
                 <h3>Emission</h3>
                 <svg class="section-toggle-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -113,7 +113,7 @@
         </div>
 
         <!-- Data Mode -->
-        <div class="control-section">
+        <div class="control-section expanded">
             <div class="control-section-header">
                 <h3>Data Mode</h3>
                 <svg class="section-toggle-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">

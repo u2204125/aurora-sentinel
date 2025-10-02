@@ -1,246 +1,384 @@
+// shockwave.js
 import { THREE, scene } from './scene-core.js';
 
 export let shockwaves = [];
 
-/**
- * Creates a new shockwave (solar flare) effect.
- * @param {THREE.Vector3} sunPosition - The starting position of the shockwave.
- * @param {THREE.Vector3} earthPosition - The target position for the shockwave.
- * @returns {THREE.Mesh} The created shockwave mesh.
- */
-export function createShockwave(sunPosition, earthPosition, params = { windSpeed: 500, density: 10 }) {
-    const innerRadius = 1 * (params.density / 10);
-    const outerRadius = 3 * (params.density / 10);
-    
-    const shockwaveGeometry = new THREE.RingGeometry(innerRadius, outerRadius, 128);
+const RING_INNER = 0.92;
+const RING_OUTER = 1.0;
+const RING_SEGMENTS = 256;
+const INITIAL_FRONT_DISTANCE = 40;
+const MIN_THICKNESS_RATIO = 0.06;
 
-    const shockwaveMaterial = new THREE.ShaderMaterial({
-        uniforms: {
-            time: { value: 0 },
-            opacity: { value: 1.0 },
-            shockwavePosition: { value: new THREE.Vector3() },
-            earthPosition: { value: earthPosition },
-            scale: { value: new THREE.Vector3(1, 1, 1) },
-            color1: { value: new THREE.Color(0xff7700) },
-            color2: { value: new THREE.Color(0xff3300) },
-            // NEW: Uniforms to sync with the magnetosphere's visual shape
-            uMagnetosphereParams: { value: new THREE.Vector3(0, 1.5, 1.2) }, // compression, tailLength, equatorBulge
-            // NEW: Uniforms for the ripple effect
-            uRippleTime: { value: 999 }, // Start high to be inactive
-            uRippleActive: { value: 0.0 }
-        },
-        vertexShader: `
-            uniform float time;
-            uniform vec3 shockwavePosition;
-            uniform vec3 earthPosition;
-            uniform vec3 scale;
-            uniform vec3 uMagnetosphereParams; // x: compression, y: tailLength, z: equatorBulge
-            uniform float uRippleTime;
-            uniform float uRippleActive;
-            varying vec2 vUv;
+let sharedGeometry = null;
 
-            // This SDF now accurately mirrors the magnetosphere's visual shader.
-            float magnetosphereSDF(vec3 pos) {
-                float compression = uMagnetosphereParams.x;
-                float tailLength = uMagnetosphereParams.y;
-                float equatorBulge = uMagnetosphereParams.z;
-                float baseRadius = 40.0;
-
-                vec3 p = pos;
-                if (p.x > 0.0) { p.x *= (1.0 - compression * 0.3); } 
-                else { p.x *= (1.0 + tailLength * (1.0 - compression * 0.5)); }
-
-                float latitude = asin(clamp(p.y / length(p), -1.0, 1.0));
-                float latitudeEffect = pow(cos(latitude), 2.0) * equatorBulge;
-                float radiusMultiplier = 1.0 + latitudeEffect * 0.2;
-                
-                return (length(p / radiusMultiplier) - baseRadius);
-            }
-
-            vec3 getMagnetosphereNormal(vec3 pos) {
-                vec2 e = vec2(1.0, -1.0) * 0.01;
-                return normalize(
-                    e.xyy * magnetosphereSDF(pos + e.xyy) +
-                    e.yyx * magnetosphereSDF(pos + e.yyx) +
-                    e.yxy * magnetosphereSDF(pos + e.yxy) +
-                    e.xxx * magnetosphereSDF(pos + e.xxx)
-                );
-            }
-
-            void main() {
-                vUv = uv;
-                vec3 pos = position;
-                vec3 worldPosition = shockwavePosition + position * scale.x;
-                vec3 relativePos = worldPosition - earthPosition;
-
-                float distToField = magnetosphereSDF(relativePos);
-                
-                // SMOOTH WRAPPING LOGIC
-                // Calculate how much to wrap based on penetration depth
-                float wrapAmount = smoothstep(5.0, -20.0, distToField);
-                
-                if (wrapAmount > 0.0) {
-                    vec3 normal = getMagnetosphereNormal(relativePos);
-                    // The target position on the magnetosphere's surface
-                    vec3 wrappedPos = pos - normal * distToField / scale.x;
-                    // Interpolate between original and wrapped position for a smooth effect
-                    pos = mix(pos, wrappedPos, wrapAmount);
-                }
-
-                // RIPPLE EFFECT LOGIC
-                if (uRippleActive > 0.5) {
-                    float rippleSpeed = 80.0;
-                    float rippleWidth = 25.0;
-                    // A wave that travels outwards from the contact point
-                    float wave = sin((distToField - uRippleTime * rippleSpeed) / rippleWidth);
-                    // The ripple's intensity fades over time
-                    float rippleIntensity = max(0.0, 1.0 - uRippleTime * 0.8) * 5.0 * uRippleActive;
-                    // Apply the wave along the surface normal
-                    vec3 normal = getMagnetosphereNormal(relativePos);
-                    pos += normal * wave * rippleIntensity;
-                }
-
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-            }
-        `,
-        fragmentShader: `
-            uniform float time;
-            uniform float opacity;
-            uniform vec3 color1;
-            uniform vec3 color2;
-            varying vec2 vUv;
-
-            void main() {
-                float dist = length(vUv - 0.5);
-                float angle = atan(vUv.y - 0.5, vUv.x - 0.5);
-                float flow = sin(angle * 10.0 + time * 3.0) * 0.5 + 0.5;
-                flow *= smoothstep(0.4, 0.5, dist);
-                vec3 color = mix(color1, color2, dist * 1.5);
-                color = mix(color, vec3(1.0, 0.9, 0.5), flow * 0.5);
-                float alpha = opacity * (1.0 - dist * 1.8);
-                gl_FragColor = vec4(color, max(0.0, alpha));
-            }
-        `,
-        transparent: true,
-        side: THREE.DoubleSide
-    });
-
-    const shockwave = new THREE.Mesh(shockwaveGeometry, shockwaveMaterial);
-    shockwave.position.copy(sunPosition);
-
-    const direction = new THREE.Vector3().subVectors(earthPosition, sunPosition).normalize();
-    shockwave.userData = {
-        direction: direction,
-        startPosition: sunPosition.clone(),
-        startTime: Date.now(),
-        speed: params.windSpeed,
-        density: params.density,
-        isInteracting: false,
-        isDetaching: false,
-        rippleTime: 999
-    };
-    
-    shockwave.lookAt(earthPosition);
-    scene.add(shockwave);
-    shockwaves.push(shockwave);
-    return shockwave;
+function getShockwaveGeometry() {
+  if (!sharedGeometry) {
+    sharedGeometry = new THREE.RingGeometry(RING_INNER, RING_OUTER, RING_SEGMENTS);
+  }
+  return sharedGeometry;
 }
 
-/**
- * Updates all active shockwaves in the scene.
- * @returns {object} An object containing collision status and ripple information.
- */
-export function updateShockwaves(earthPosition, magnetosphereParams, time) {
-    let collision = false;
-    let rippleInfo = { active: false, time: 0, origin: new THREE.Vector3() };
-    const BASE_SPEED = 100;
-    const MAX_DISTANCE = 800;
-    const MAGNETOSPHERE_RADIUS = 40.0;
-    const TAIL_END_X = -120; // X-coordinate where detachment happens
+export function createShockwave(origin, target, cme = {}) {
+  const geometry = getShockwaveGeometry();
+  const material = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uTime: { value: 0 },
+      uOpacity: { value: 0 },
+      uScale: { value: 1 },
+      uThickness: { value: MIN_THICKNESS_RATIO },
+      uIntensity: { value: 1.0 },
+      uApproach: { value: 0.0 },
+      uColorCore: { value: new THREE.Color(0.95, 0.55, 0.15) },
+      uColorShell: { value: new THREE.Color(0.9, 0.35, 0.12) },
+  uColorFront: { value: new THREE.Color(1.0, 0.96, 0.88) },
+  uForwardExtent: { value: 1.0 },
+  uSeedA: { value: new THREE.Vector4(Math.random(), Math.random(), Math.random(), Math.random()) },
+  uSeedB: { value: new THREE.Vector4(Math.random(), Math.random(), Math.random(), Math.random()) }
+    },
+    vertexShader: `
+      precision highp float;
+      uniform float uScale;
+      uniform float uTime;
+      uniform float uForwardExtent;
+      uniform vec4 uSeedA;
+      uniform vec4 uSeedB;
+      varying vec2 vUv;
+      varying float vRadial;
+      varying float vLoopMask;
 
-    for (let i = shockwaves.length - 1; i >= 0; i--) {
-        const shockwave = shockwaves[i];
-        const material = shockwave.material;
-        const timeDelta = time - (shockwave.userData.startTime / 1000);
+      float softPulse(float x, float k) {
+        return pow(max(0.0, x), k);
+      }
 
-        // --- UPDATE POSITION ---
-        const speed = (shockwave.userData.speed / 500) * BASE_SPEED;
-        const progress = timeDelta * speed;
-        const newPosition = shockwave.userData.startPosition.clone().add(shockwave.userData.direction.clone().multiplyScalar(progress));
-        shockwave.position.copy(newPosition);
-        
-        const distToEarth = newPosition.distanceTo(earthPosition);
-        const earthRelativePos = newPosition.clone().sub(earthPosition);
+      void main() {
+        vUv = uv;
+        vRadial = uv.y;
+        vec3 pos = position;
+        float theta = uv.x * 6.28318 + uSeedA.x * 6.28318;
+  float primaryLobe = softPulse(sin(theta * (1.8 + uSeedA.y * 3.5) + uSeedA.z * 6.28318), 1.4 + uSeedA.w * 1.8);
+  float secondary = softPulse(sin(theta * (3.0 + uSeedB.x * 5.5) + uSeedB.y * 6.28318), 1.1 + uSeedB.z * 1.6);
+  float arcProfile = (0.45 + 0.55 * vRadial) * primaryLobe + (0.25 + 0.35 * (1.0 - vRadial)) * secondary;
+  float rise = arcProfile * uForwardExtent * (0.32 + uSeedA.w * 0.28);
+  float swirl = sin(uTime * (0.4 + uSeedB.w * 0.9) + theta * (1.2 + uSeedA.y * 0.8)) * 0.03 * vRadial;
+  pos.z += rise + swirl;
+  float lateral = 1.0 + arcProfile * 0.18;
+        pos.xy *= lateral;
+        float twist = sin(theta * (4.0 + uSeedB.w * 6.0) + uTime * (0.6 + uSeedA.x)) * 0.3 * vRadial;
+        float ct = cos(twist);
+        float st = sin(twist);
+        pos = vec3(pos.x * ct - pos.y * st, pos.x * st + pos.y * ct, pos.z);
+  float ripple = sin(uTime * 1.2 + vRadial * 18.0 + theta * 1.6) * 0.004 * uForwardExtent;
+  float breathing = sin(uTime * 0.6 + theta) * 0.003 * uForwardExtent;
+  pos.z += ripple + breathing;
+  vLoopMask = clamp(rise * 1.6, 0.0, 1.0);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(pos * uScale, 1.0);
+      }
+    `,
+    fragmentShader: `
+      precision highp float;
+      uniform float uTime;
+      uniform float uOpacity;
+      uniform float uIntensity;
+      uniform float uApproach;
+      uniform float uThickness;
+      uniform vec3 uColorCore;
+      uniform vec3 uColorShell;
+      uniform vec3 uColorFront;
+      varying vec2 vUv;
+      varying float vRadial;
+      varying float vLoopMask;
 
-        // --- STATE MANAGEMENT & SCALING ---
-        let currentScale = shockwave.scale.x;
-        if (shockwave.userData.isInteracting) {
-            // If interacting, smoothly shrink to match magnetosphere size
-            const targetScale = MAGNETOSPHERE_RADIUS * 1.5;
-            currentScale = THREE.MathUtils.lerp(currentScale, targetScale, 0.05);
-        } else {
-            // Default growth behavior
-            const growthFactor = 1.0 - Math.min(distToEarth / (MAX_DISTANCE * 0.5), 1.0);
-            const densityScale = shockwave.userData.density / 10;
-            currentScale = (5.0 * densityScale) + (growthFactor * 35.0 * densityScale);
+      float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+      }
+
+      float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        float a = hash(i);
+        float b = hash(i + vec2(1.0, 0.0));
+        float c = hash(i + vec2(0.0, 1.0));
+        float d = hash(i + vec2(1.0, 1.0));
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+      }
+
+      float fbm(vec2 p) {
+        float value = 0.0;
+        float amp = 0.5;
+        for (int i = 0; i < 4; i++) {
+          value += amp * noise(p);
+          p = p * 2.0 + vec2(100.0);
+          amp *= 0.5;
         }
-        shockwave.scale.setScalar(currentScale);
+        return value;
+      }
 
-        // --- COLLISION & RIPPLE TRIGGERS ---
-        if (distToEarth < MAGNETOSPHERE_RADIUS * 1.8 && !shockwave.userData.isInteracting) {
-            shockwave.userData.isInteracting = true;
-            shockwave.userData.rippleTime = 0; // Trigger contact ripple
-            collision = true;
-        }
-        
-        if (earthRelativePos.x < TAIL_END_X && !shockwave.userData.isDetaching) {
-            shockwave.userData.isDetaching = true;
-            shockwave.userData.isInteracting = false; // Stop shrinking
-            shockwave.userData.rippleTime = 0; // Trigger detachment ripple
-        }
+      void main() {
+        float radial = clamp(vRadial, 0.0, 1.0);
+        float angle = vUv.x * 6.28318;
 
-        if(shockwave.userData.isInteracting || shockwave.userData.isDetaching) {
-            shockwave.userData.rippleTime += 1/60; // Approximate delta time
-            if (shockwave.userData.rippleTime < 1.5) {
-                rippleInfo.active = true;
-                rippleInfo.time = shockwave.userData.rippleTime;
-                // Set ripple origin based on whether we are contacting or detaching
-                rippleInfo.origin = shockwave.userData.isDetaching 
-                    ? new THREE.Vector3(TAIL_END_X, 0, 0)
-                    : new THREE.Vector3(MAGNETOSPHERE_RADIUS, 0, 0);
-            } else {
-                // After ripple effect is done, reset state
-                if(shockwave.userData.isDetaching) shockwave.userData.isDetaching = false;
-            }
-        }
-        
-        // --- FADE OUT & REMOVAL ---
-        const passedTail = earthRelativePos.x < TAIL_END_X - 100;
-        let opacity = 1.0;
-        if (passedTail) {
-            const fadeProgress = (Math.abs(earthRelativePos.x) - (Math.abs(TAIL_END_X) + 100)) / 100;
-            opacity = Math.max(0, 1.0 - fadeProgress);
-        }
-        material.uniforms.opacity.value = opacity;
+        float innerEdge = clamp(1.0 - uThickness, 0.0, 0.98);
+        float shell = smoothstep(innerEdge - 0.03, innerEdge + 0.015, radial);
+        shell *= 1.0 - smoothstep(0.995, 1.0, radial);
 
-        if (opacity <= 0.01) {
-            scene.remove(shockwave);
-            shockwaves.splice(i, 1);
-            continue;
-        }
+        float turbulent = fbm(vec2(angle * 0.6, radial * 4.0 + uTime * 0.7));
+        float streak = fbm(vec2(angle * 1.2 - uTime * 1.1, radial * 7.0));
 
-        // --- UPDATE SHADER UNIFORMS ---
-        material.uniforms.time.value = time;
-        material.uniforms.shockwavePosition.value.copy(newPosition);
-        material.uniforms.scale.value.copy(shockwave.scale);
-        material.uniforms.uMagnetosphereParams.value.set(
-            magnetosphereParams.compression,
-            magnetosphereParams.tailLength,
-            magnetosphereParams.equatorBulge
-        );
-        material.uniforms.uRippleTime.value = shockwave.userData.rippleTime;
-        material.uniforms.uRippleActive.value = (rippleInfo.active && (shockwave.userData.isInteracting || shockwave.userData.isDetaching)) ? 1.0 : 0.0;
+        vec3 color = mix(uColorCore, uColorShell, radial);
+        float frontMix = smoothstep(0.88, 1.0, radial);
+        color = mix(color, uColorFront, frontMix);
+        color += uColorFront * (0.05 + 0.25 * uApproach) * turbulent;
+        color += uColorFront * streak * 0.1;
+        color += uColorFront * vLoopMask * 0.3;
+
+        float alpha = shell * uOpacity;
+        alpha *= 0.75 + 0.25 * turbulent;
+        alpha *= 0.85 + 0.15 * uApproach;
+        alpha *= 0.6 + 0.4 * vLoopMask;
+
+        if (alpha <= 0.001) discard;
+
+        gl_FragColor = vec4(color * (0.9 + uIntensity * 0.4), alpha);
+      }
+    `
+  });
+
+  const mesh = new THREE.Mesh(geometry, material);
+
+  const originPoint = origin.clone();
+  let dir;
+  if (target && !target.equals(originPoint)) {
+    dir = target.clone().sub(originPoint).normalize();
+  } else {
+    const lon = THREE.MathUtils.degToRad(cme.longitude || 0);
+    const lat = THREE.MathUtils.degToRad(cme.latitude || 0);
+    dir = new THREE.Vector3(
+      Math.cos(lat) * Math.cos(lon),
+      Math.sin(lat),
+      Math.cos(lat) * Math.sin(lon)
+    ).normalize();
+  }
+
+  const halfAngle = THREE.MathUtils.degToRad(cme.halfAngle ?? 40);
+  const frontDistance = INITIAL_FRONT_DISTANCE;
+  const shellRadius = Math.max(25, Math.tan(halfAngle) * frontDistance);
+
+  const density = cme.density ?? 10;
+  const speedKms = Math.max(250, cme.speed || 700);
+  const speedUnitsPerSec = speedKms / 45;
+  const densityFactor = THREE.MathUtils.clamp(density / 10, 0.25, 2.5);
+  const speedFactor = THREE.MathUtils.clamp(speedKms / 700, 0.6, 1.6);
+  const energy = densityFactor * speedFactor;
+
+  const targetDistance = target ? originPoint.distanceTo(target) : 800;
+  const tailLength = Math.max(220, targetDistance * 0.45);
+  const baseThickness = THREE.MathUtils.clamp(MIN_THICKNESS_RATIO + energy * 0.05, MIN_THICKNESS_RATIO, 0.35);
+  const forwardExtentRatio = THREE.MathUtils.clamp(0.65 + energy * 0.25, 0.55, 1.35);
+
+  mesh.position.copy(originPoint.clone().add(dir.clone().multiplyScalar(frontDistance)));
+  mesh.lookAt(mesh.position.clone().add(dir));
+
+  material.uniforms.uScale.value = shellRadius;
+  material.uniforms.uThickness.value = baseThickness;
+  material.uniforms.uIntensity.value = 0.85 + energy * 0.35;
+  material.uniforms.uForwardExtent.value = forwardExtentRatio;
+
+  mesh.userData = {
+    origin: originPoint,
+    dir,
+    halfAngle,
+    frontDistance,
+    speed: speedUnitsPerSec,
+    energy,
+    targetDistance,
+    tailLength,
+    baseThickness,
+  forwardExtentRatio,
+    mode: 'inbound',
+    curveSign: Math.random() > 0.5 ? 1 : -1,
+    contactNormal: null,
+    slideAngle: 0,
+  tailAnchor: null,
+    passedEarth: false,
+    _hit: false,
+    rippleTime: 0,
+    approach: 0,
+    _lastT: null
+  };
+  scene.add(mesh);
+  shockwaves.push(mesh);
+  return mesh;
+}
+
+export function updateShockwaves(earthPos, magnetoParams, tSec) {
+  let collision = false;
+  let rippleInfo = { active: false, time: 0, origin: new THREE.Vector3(1, 0, 0) };
+  let maxApproach = 0;
+  let maxCompressionBoost = 0;
+  let impactNormal = null;
+
+  for (let i = shockwaves.length - 1; i >= 0; i--) {
+    const sw = shockwaves[i];
+    const dt = Math.max(0, tSec - (sw.userData._lastT ?? tSec));
+    sw.userData._lastT = tSec;
+
+    const baseMagnetopause = 40;
+    const mpDist = baseMagnetopause * (1 - 0.25 * (magnetoParams?.compression || 0));
+
+    if (sw.userData.mode === 'skimming') {
+      sw.userData.slideAngle += dt * 0.45;
+      const axis = new THREE.Vector3(0, sw.userData.curveSign, 0);
+      const angle = Math.min(sw.userData.slideAngle, Math.PI * 0.85);
+      const quat = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+      const rotatedNormal = sw.userData.contactNormal.clone().applyQuaternion(quat).normalize();
+
+  const surfacePos = earthPos.clone().add(rotatedNormal.clone().multiplyScalar(mpDist));
+      sw.position.copy(surfacePos);
+      sw.userData.dir = rotatedNormal.clone();
+      sw.lookAt(surfacePos.clone().add(sw.userData.dir));
+      sw.userData.frontDistance = mpDist;
+
+      const shellRadius = Math.max(30, Math.tan(sw.userData.halfAngle) * sw.userData.frontDistance);
+      sw.material.uniforms.uTime.value = tSec;
+      sw.material.uniforms.uScale.value = shellRadius;
+      sw.material.uniforms.uThickness.value = THREE.MathUtils.clamp(
+        sw.userData.baseThickness + sw.userData.energy * 0.05,
+        MIN_THICKNESS_RATIO,
+        0.4
+      );
+      sw.material.uniforms.uForwardExtent.value = sw.userData.forwardExtentRatio;
+  sw.material.uniforms.uApproach.value = 1.0;
+  // Fade slightly while skimming so they don't pile up too bright
+  const skimProgress = angle / (Math.PI * 0.85);
+  sw.material.uniforms.uOpacity.value = THREE.MathUtils.lerp(0.85, 0.55, THREE.MathUtils.clamp(skimProgress, 0, 1));
+
+      maxApproach = Math.max(maxApproach, 1.0);
+      maxCompressionBoost = Math.max(maxCompressionBoost, sw.userData.energy);
+      impactNormal = rotatedNormal.clone();
+
+      sw.userData.rippleTime += dt;
+      if (sw.userData.rippleTime < 1.6) {
+        rippleInfo = {
+          active: true,
+          time: sw.userData.rippleTime,
+          origin: rotatedNormal.clone().multiplyScalar(mpDist)
+        };
+      }
+
+      if (sw.userData.slideAngle >= Math.PI * 0.85) {
+        sw.userData.mode = 'tail';
+  const tailDir = new THREE.Vector3(-1, rotatedNormal.y * 0.35, rotatedNormal.z * 0.4).normalize();
+  sw.userData.dir = tailDir;
+  sw.userData.tailAnchor = surfacePos.clone().sub(tailDir.clone().multiplyScalar(sw.userData.frontDistance));
+        // Define how far along the magnetotail we keep rendering before fully fading out
+        sw.userData.tailFadeEnd = mpDist * (2.6 + 1.1 * (magnetoParams?.tailLength || 1.5));
+        sw.userData.passedEarth = true;
+      }
+      continue;
     }
 
-    return { collision, rippleInfo };
+    const isTail = sw.userData.mode === 'tail';
+    const speedFactor = isTail ? 0.55 : sw.userData._hit && !sw.userData.passedEarth ? 0.22 : 1.0;
+    sw.userData.frontDistance += sw.userData.speed * dt * speedFactor;
+    const shellRadius = Math.max(30, Math.tan(sw.userData.halfAngle) * sw.userData.frontDistance);
+
+    sw.material.uniforms.uTime.value = tSec;
+    sw.material.uniforms.uScale.value = shellRadius;
+    const thicknessRatio = THREE.MathUtils.clamp(
+      sw.userData.baseThickness + sw.userData.energy * 0.03 + sw.userData.approach * 0.08,
+      MIN_THICKNESS_RATIO,
+      0.4
+    );
+    sw.material.uniforms.uThickness.value = thicknessRatio;
+    const forwardExtent = shellRadius * (sw.userData.forwardExtentRatio + sw.userData.approach * 0.12);
+    sw.material.uniforms.uForwardExtent.value = sw.userData.forwardExtentRatio;
+
+    const baseOrigin = sw.userData.mode === 'tail' && sw.userData.tailAnchor ? sw.userData.tailAnchor : sw.userData.origin;
+
+    const frontPos = baseOrigin
+      .clone()
+      .add(sw.userData.dir.clone().multiplyScalar(sw.userData.frontDistance));
+    sw.position.copy(frontPos);
+    sw.lookAt(frontPos.clone().add(sw.userData.dir));
+    const distToEarth = Math.max(0, frontPos.distanceTo(earthPos) - forwardExtent);
+
+    const approachBuffer = Math.max(mpDist, sw.userData.targetDistance + sw.userData.tailLength * 0.3);
+    const approach = THREE.MathUtils.clamp(1 - distToEarth / approachBuffer, 0, 1);
+    sw.userData.approach = approach;
+    sw.material.uniforms.uApproach.value = approach;
+    maxApproach = Math.max(maxApproach, approach);
+
+    const compressionBoost = sw.userData.energy * Math.pow(approach, 1.2);
+    maxCompressionBoost = Math.max(maxCompressionBoost, compressionBoost);
+
+    if (!sw.userData._hit && distToEarth < mpDist) {
+      sw.userData._hit = true;
+      sw.userData.rippleTime = 0;
+      sw.userData.mode = 'skimming';
+      sw.userData.contactNormal = frontPos.clone().sub(earthPos).normalize();
+      sw.userData.slideAngle = 0;
+      collision = true;
+      continue;
+    }
+
+    if (sw.userData._hit) {
+      sw.userData.rippleTime += dt;
+      if (sw.userData.rippleTime < 1.6) {
+        const actualImpactDir = sw.userData.origin
+          .clone()
+          .add(sw.userData.dir.clone().multiplyScalar(sw.userData.frontDistance + forwardExtent))
+          .sub(earthPos)
+          .normalize();
+        rippleInfo = {
+          active: true,
+          time: sw.userData.rippleTime,
+          origin: actualImpactDir.multiplyScalar(mpDist)
+        };
+        impactNormal = actualImpactDir.clone();
+      }
+    }
+
+    if (!sw.userData.passedEarth && sw.userData.frontDistance >= sw.userData.targetDistance) {
+      sw.userData.passedEarth = true;
+    }
+
+    const fadeIn = THREE.MathUtils.clamp((sw.userData.frontDistance - INITIAL_FRONT_DISTANCE * 0.5) / (INITIAL_FRONT_DISTANCE * 1.2), 0, 1);
+    const fadeStart = sw.userData.targetDistance + sw.userData.tailLength * 0.25;
+    const fadeEnd = sw.userData.targetDistance + sw.userData.tailLength;
+    let opacity = fadeIn;
+
+    if (sw.userData.passedEarth) {
+      const fadeProgress = (sw.userData.frontDistance - fadeStart) / Math.max(20, fadeEnd - fadeStart);
+      opacity = THREE.MathUtils.clamp(1 - fadeProgress, 0, 1);
+    }
+
+    // If traveling down the magnetotail, override fade by magnetosphere length so it disappears after crossing it
+    if (isTail) {
+  const tailEnd = sw.userData.tailFadeEnd || (mpDist * 3.0);
+  const p = THREE.MathUtils.clamp(sw.userData.frontDistance / Math.max(1e-3, tailEnd), 0, 1);
+  const fade = THREE.MathUtils.smoothstep(p, 0.6, 1.0);
+  const tailOpacity = 0.9 * (1.0 - fade);
+      opacity = Math.min(opacity, tailOpacity);
+      if (p >= 1.0) {
+        scene.remove(sw);
+        shockwaves.splice(i, 1);
+        continue;
+      }
+    }
+
+    opacity *= 0.85 + 0.15 * approach;
+    sw.material.uniforms.uOpacity.value = opacity;
+
+    if (sw.userData.frontDistance > fadeEnd) {
+      scene.remove(sw);
+      shockwaves.splice(i, 1);
+      continue;
+    }
+  }
+
+  return { collision, rippleInfo, proximity: maxApproach, compressionBoost: maxCompressionBoost, impactNormal };
 }

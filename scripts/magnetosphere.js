@@ -1,148 +1,167 @@
+// magnetosphere.js
 import { THREE, scene } from './scene-core.js';
 
 export let magnetosphere;
 
-export function createMagnetosphere(earthPosition) {
-    const magnetosphereGeometry = new THREE.SphereGeometry(40, 64, 64);
-    const magnetosphereMaterial = new THREE.ShaderMaterial({
-        uniforms: {
-            time: { value: 0 },
-            compression: { value: 0 },
-            solarWindDirection: { value: new THREE.Vector3(1, 0, 0) },
-            magneticPoleStrength: { value: 1.0 },
-            equatorBulge: { value: 1.2 },
-            tailLength: { value: 1.5 },
-            // Uniforms for the ripple effect
-            uRippleTime: { value: 999 },
-            uRippleActive: { value: 0.0 },
-            uRippleOrigin: { value: new THREE.Vector3(40, 0, 0) }
-        },
-        vertexShader: `
-            uniform float time;
-            uniform float compression;
-            uniform vec3 solarWindDirection;
-            uniform float magneticPoleStrength;
-            uniform float equatorBulge;
-            uniform float tailLength;
-            uniform float uRippleTime;
-            uniform float uRippleActive;
-            uniform vec3 uRippleOrigin;
-            
-            varying vec3 vPosition;
-            varying vec3 vNormal;
-            
-            void main() {
-                vPosition = position;
-                vNormal = normal;
-                vec3 pos = position;
-                
-                if (pos.x > 0.0) { pos.x *= (1.0 - compression * 0.3); } 
-                else { pos.x *= (1.0 + tailLength * (1.0 - compression * 0.5)); }
-                
-                float latitude = asin(pos.y / length(pos));
-                float latitudeEffect = pow(cos(latitude), 2.0) * equatorBulge;
-                float radiusMultiplier = 1.0 + latitudeEffect * 0.2;
-                pos.xz *= radiusMultiplier;
-                
-                float poleEffect = 1.0 - pow(abs(sin(latitude)), 3.0) * magneticPoleStrength;
-                pos *= poleEffect;
-                
-                if (compression > 0.0) {
-                    float angle = dot(normalize(pos), solarWindDirection);
-                    float deformation = smoothstep(-1.0, 1.0, angle) * compression;
-                    pos -= solarWindDirection * deformation * 10.0;
-                    float turbulence = sin(time * 5.0 + length(pos) * 0.2) * compression * 2.0;
-                    pos += normal * turbulence;
-                }
+const impactState = {
+  normal: new THREE.Vector3(1, 0, 0),
+  strength: 0
+};
 
-                // RIPPLE EFFECT LOGIC
-                if (uRippleActive > 0.5) {
-                    float rippleSpeed = 60.0;
-                    float rippleWidth = 20.0;
-                    float distFromOrigin = distance(pos, uRippleOrigin);
-                    float wave = sin((distFromOrigin - uRippleTime * rippleSpeed) / rippleWidth);
-                    float rippleIntensity = max(0.0, 1.0 - uRippleTime * 0.8) * 3.0;
-                    pos += normalize(pos) * wave * rippleIntensity;
-                }
-                
-                gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
-            }
-        `,
-        // --- THIS IS THE RESTORED, COMPLETE FRAGMENT SHADER ---
-        fragmentShader: `
-            uniform float time;
-            uniform float compression;
-            varying vec3 vPosition;
-            varying vec3 vNormal;
-            
-            void main() {
-                float latitude = asin(vPosition.y / length(vPosition));
-                vec3 baseColor = vec3(0.2, 0.6, 1.0);
-                
-                float poleInfluence = pow(abs(sin(latitude)), 8.0);
-                vec3 poleColor = vec3(0.6, 0.2, 1.0);
-                vec3 finalColor = mix(baseColor, poleColor, poleInfluence);
-                
-                float fresnel = pow(1.0 - abs(dot(vNormal, vec3(0, 0, 1))), 3.0);
-                float fieldStrength = 1.0 - pow(abs(sin(latitude)), 2.0);
-                float alpha = fresnel * 0.4 * fieldStrength;
-                
-                float pulse = sin(time * 2.0) * 0.1 + 0.9;
-                alpha *= pulse;
-                
-                if (compression > 0.0) {
-                    alpha = mix(alpha, alpha * 1.5, compression);
-                    finalColor = mix(finalColor, vec3(0.4, 0.8, 1.0), compression * 0.5);
-                }
-                
-                gl_FragColor = vec4(finalColor, alpha);
-            }
-        `,
-        transparent: true,
-        side: THREE.FrontSide
-    });
-    magnetosphere = new THREE.Mesh(magnetosphereGeometry, magnetosphereMaterial);
-    magnetosphere.position.copy(earthPosition);
-    scene.add(magnetosphere);
+// Shue model
+function shueParams(Pd, Bz) {
+  const r0 = (10.22 + 1.29 * Math.tanh(0.184 * (Bz + 8.14))) * Math.pow(Pd || 1, -1 / 6.6);
+  const alpha = (0.58 - 0.007 * Bz) * (1 + 0.024 * Math.log(Math.max(Pd, 0.1)));
+  return { r0, alpha };
 }
 
-let currentCompression = 0;
-let currentBz = 0;
+export function createMagnetosphere(earthPos) {
+  const geom = new THREE.SphereGeometry(1, 128, 128);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uR0: { value: 10.5 },
+      uAlpha: { value: 0.6 },
+      uBz: { value: -5 },
+      uPd: { value: 2 },
+      uRippleTime: { value: 999 },
+      uRippleActive: { value: 0.0 },
+      uRippleOrigin: { value: new THREE.Vector3(1, 0, 0) },
+      uImpactNormal: { value: new THREE.Vector3(1, 0, 0) },
+      uImpactStrength: { value: 0 },
+      uCompression: { value: 0 }
+    },
+    vertexShader: `
+      uniform float uR0, uAlpha;
+      varying vec3 vPos;
+      void main() {
+        vec3 n = normalize(position);
+        float theta = acos(clamp(n.x, -1.0, 1.0));
+        float denom = 1.0 + cos(theta);
+        float scale = uR0 * pow(2.0 / max(denom, 1e-4), uAlpha);
+        vec3 mp = n * scale;
+        vPos = mp;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(mp, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime, uRippleTime, uRippleActive, uImpactStrength, uCompression;
+      uniform vec3 uRippleOrigin, uImpactNormal;
+      varying vec3 vPos;
+      void main() {
+        vec3 N = normalize(vPos);
+        float dusk = clamp((dot(N, vec3(1.0,0.0,0.0)) + 1.0) * 0.5, 0.0, 1.0);
+        float tail = clamp(1.0 - dusk, 0.0, 1.0);
 
-export function updateMagnetosphere(time, compressionAmount = 0, params = { bz: -5 }, rippleInfo) {
-    if (!magnetosphere) return;
-    
-    const smoothSpeed = 0.1;
-    currentCompression += (compressionAmount - currentCompression) * smoothSpeed;
-    
-    const bzSmoothSpeed = 0.05;
-    currentBz += (params.bz - currentBz) * bzSmoothSpeed;
-    
-    const uniforms = magnetosphere.material.uniforms;
-    uniforms.time.value = time;
-    uniforms.compression.value = currentCompression;
-    
-    const bzEffect = Math.max(0, currentBz / 10);
-    const compressionEffect = currentCompression * 0.3;
-    uniforms.magneticPoleStrength.value = 1.0 + bzEffect - compressionEffect;
-    
-    const bzBulgeEffect = Math.max(0, -currentBz / 10);
-    uniforms.equatorBulge.value = 1.2 + currentCompression * 0.3 + bzBulgeEffect * 0.4;
-    
-    const bzTailEffect = Math.max(0, -currentBz / 10);
-    uniforms.tailLength.value = 1.5 + currentCompression * 0.5 + bzTailEffect * 0.8;
+        vec3 dayColor = vec3(0.28, 0.66, 1.05);
+        vec3 nightColor = vec3(0.55, 0.25, 0.95);
+        vec3 base = mix(nightColor, dayColor, dusk);
 
-    if (rippleInfo && rippleInfo.active) {
-        uniforms.uRippleActive.value = 1.0;
-        uniforms.uRippleTime.value = rippleInfo.time;
-        uniforms.uRippleOrigin.value.copy(rippleInfo.origin);
-    } else {
-        uniforms.uRippleActive.value = 0.0;
+        float rim = pow(1.0 - abs(dot(N, vec3(0.0, 0.0, 1.0))), 2.8);
+        float auroral = pow(clamp(N.z, 0.0, 1.0), 4.0);
+
+        float ripple = 0.0;
+        if (uRippleActive > 0.1) {
+          float dist = length(vPos - uRippleOrigin);
+          float spread = 1.0 - smoothstep(0.0, 15.0, dist);
+          ripple = spread * (0.55 + 0.45 * sin(uRippleTime * 6.0 + dist * 0.7));
+        }
+
+        float impact = 0.0;
+        if (uImpactStrength > 0.01) {
+          float align = max(dot(N, uImpactNormal), 0.0);
+          float band = pow(align, 12.0);
+          float shear = pow(1.0 - abs(N.z), 3.5);
+          impact = (band * 1.5 + shear * 0.35) * uImpactStrength;
+        }
+
+        float compressionGlow = pow(clamp(dot(N, vec3(1.0, 0.0, 0.0)), 0.0, 1.0), 2.5) * (0.18 + uCompression * 0.7);
+        float tailFade = pow(tail, 1.5);
+
+        vec3 color = base;
+        color += rim * vec3(0.12, 0.23, 0.45);
+        color += auroral * vec3(0.05, 0.35, 0.55) * (0.8 + uCompression * 0.4);
+        color += ripple * vec3(0.2, 0.44, 0.92);
+        color += impact * vec3(0.95, 0.75, 0.28);
+        color += tailFade * vec3(0.05, 0.08, 0.18);
+        color += compressionGlow * vec3(0.42, 0.3, 0.12);
+
+        float alpha = 0.2 + rim * 0.22 + auroral * 0.18;
+        alpha += impact * 0.4;
+        alpha = clamp(alpha, 0.12, 0.72);
+
+        gl_FragColor = vec4(color, alpha);
+      }
+    `,
+    transparent: true,
+    side: THREE.FrontSide
+  });
+  magnetosphere = new THREE.Mesh(geom, mat);
+  magnetosphere.position.copy(earthPos);
+  scene.add(magnetosphere);
+}
+
+let current = { r0: 10.5, alpha: 0.6, bz: -5, pd: 2 };
+
+export function updateMagnetosphere(time, solarWind, rippleInfo, shockInfluence = { proximity: 0, compressionBoost: 0 }) {
+  if (!magnetosphere) return current;
+
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const k = 0.12;
+
+  const Pd = solarWind?.pd ?? current.pd;
+  const Bz = solarWind?.bz ?? current.bz;
+  const proximity = THREE.MathUtils.clamp(shockInfluence?.proximity ?? 0, 0, 1);
+  const compressionGain = THREE.MathUtils.clamp(shockInfluence?.compressionBoost ?? 0, 0, 3);
+
+  const pressureBoost = 1 + proximity * 0.6 + compressionGain * 0.4;
+  const effectivePd = Pd * pressureBoost;
+  const effectiveBz = Bz - proximity * 1.5;
+
+  const { r0, alpha } = shueParams(effectivePd, effectiveBz);
+
+  current = {
+    r0: lerp(current.r0, r0, k),
+    alpha: lerp(current.alpha, alpha, k),
+    bz: lerp(current.bz, effectiveBz, k),
+    pd: lerp(current.pd, effectivePd, k)
+  };
+
+  const u = magnetosphere.material.uniforms;
+  u.uTime.value = time;
+  u.uR0.value = current.r0;
+  u.uAlpha.value = current.alpha;
+  u.uBz.value = current.bz;
+  u.uPd.value = current.pd;
+
+  if (rippleInfo?.active) {
+    u.uRippleActive.value = 1.0;
+    u.uRippleTime.value = rippleInfo.time;
+    u.uRippleOrigin.value.copy(rippleInfo.origin);
+  } else {
+    u.uRippleActive.value = THREE.MathUtils.lerp(u.uRippleActive.value, proximity * 0.6, 0.1);
+    if (proximity < 0.01) {
+      u.uRippleTime.value = 999;
     }
+  }
 
-    return {
-        compression: currentCompression,
-        tailLength: uniforms.tailLength.value,
-        equatorBulge: uniforms.equatorBulge.value
-    };
+  if (shockInfluence?.impactNormal) {
+    impactState.normal.copy(shockInfluence.impactNormal).normalize();
+    impactState.strength = THREE.MathUtils.lerp(impactState.strength, 1, 0.35);
+  } else {
+    impactState.strength = THREE.MathUtils.lerp(impactState.strength, 0, 0.12);
+  }
+
+  const compressionMetric = THREE.MathUtils.clamp((11 - current.r0) / 6, 0, 1);
+
+  u.uImpactNormal.value.copy(impactState.normal);
+  u.uImpactStrength.value = impactState.strength;
+  u.uCompression.value = compressionMetric;
+
+  // Return sync params
+  return {
+    compression: compressionMetric,
+    tailLength: THREE.MathUtils.lerp(1.2, 2.2, THREE.MathUtils.clamp((current.alpha - 0.4) / 0.4, 0, 1)),
+    equatorBulge: THREE.MathUtils.lerp(1.0, 1.4, THREE.MathUtils.clamp((current.pd - 1) / 5, 0, 1))
+  };
 }
